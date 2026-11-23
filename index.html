@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign in · Agent Tickets</title>
+  <meta name="description" content="Sign in to Agent Tickets." />
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235b7cfa'/><text x='16' y='23' font-size='18' font-family='sans-serif' font-weight='700' fill='white' text-anchor='middle'>A</text></svg>" />
+</head>
+<body>
+  <div class="auth-shell">
+    <div class="auth-card">
+      <div class="brand">
+        <span class="brand-mark">A</span>
+        <span>Agent Tickets</span>
+      </div>
+
+      <h1>Sign in</h1>
+      <p class="sub">Use your work email to continue.</p>
+
+      <form id="login-form" novalidate>
+        <div class="field">
+          <label for="email">Email</label>
+          <input id="email" name="email" type="email" autocomplete="username"
+                 placeholder="you@company.com" required autofocus />
+        </div>
+
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password"
+                 autocomplete="current-password" placeholder="••••••••" required />
+        </div>
+
+        <button class="primary" type="submit" id="submit">Continue</button>
+
+        <p class="error" id="error" role="alert" aria-live="polite"></p>
+      </form>
+
+      <p class="note">
+        Demo build — no server behind this. Credentials are checked in the browser and
+        never sent anywhere. Wire this form to real auth before it guards anything.
+      </p>
+    </div>
+  </div>
+
+  <script type="module">
+    import { getSession, signIn } from "./auth.js";
+
+    // Already signed in? Skip straight to the landing page.
+    if (getSession()) {
+      location.replace("./app.html");
+    }
+
+    const form = document.getElementById("login-form");
+    const emailInput = document.getElementById("email");
+    const passwordInput = document.getElementById("password");
+    const errorEl = document.getElementById("error");
+    const submitBtn = document.getElementById("submit");
+
+    function showError(message, field) {
+      errorEl.textContent = message;
+      errorEl.classList.add("show");
+      for (const el of [emailInput, passwordInput]) el.setAttribute("aria-invalid", "false");
+      if (field) {
+        field.setAttribute("aria-invalid", "true");
+        field.focus();
+      }
+    }
+
+    function clearError() {
+      errorEl.textContent = "";
+      errorEl.classList.remove("show");
+      for (const el of [emailInput, passwordInput]) el.setAttribute("aria-invalid", "false");
+    }
+
+    emailInput.addEventListener("input", clearError);
+    passwordInput.addEventListener("input", clearError);
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      clearError();
+
+      const email = emailInput.value.trim();
+      const password = passwordInput.value;
+
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        showError("Enter a valid email address.", emailInput);
+        return;
+      }
+      if (password.length < 4) {
+        showError("Password must be at least 4 characters.", passwordInput);
+        return;
+      }
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Signing in…";
+
+      signIn(email);
+      location.assign("./app.html");
+    });
+  </script>
+</body>
+</html>

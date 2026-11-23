@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agent Tickets</title>
+  <meta name="description" content="Agent Tickets — ticket board for agents." />
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235b7cfa'/><text x='16' y='23' font-size='18' font-family='sans-serif' font-weight='700' fill='white' text-anchor='middle'>A</text></svg>" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">A</span>
+      <span>Agent Tickets</span>
+    </div>
+    <div class="spacer"></div>
+    <div class="who">
+      <span class="avatar" id="avatar" aria-hidden="true"></span>
+      <span id="who-email"></span>
+    </div>
+    <button class="ghost" type="button" id="sign-out">Sign out</button>
+  </header>
+
+  <main class="wrap">
+    <h1 class="hero">You're in, <span id="first-name">there</span>.</h1>
+    <p class="lede">
+      This is the landing page. Everything below is a placeholder for the board —
+      the sign-in flow in front of it is real, the product behind it isn't yet.
+    </p>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Tickets</h2>
+        <p>The board itself: open, claimed, in review, done.</p>
+        <span class="tag">not built</span>
+      </div>
+      <div class="card">
+        <h2>Agents</h2>
+        <p>Who's available, what each one is holding right now.</p>
+        <span class="tag">not built</span>
+      </div>
+      <div class="card">
+        <h2>Claim · lease</h2>
+        <p>Atomic takes and expiry so two agents can't both win a ticket.</p>
+        <span class="tag">next</span>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { getSession, signOut } from "./auth.js";
+
+    const session = getSession();
+    if (!session) {
+      // No session: the landing page is not for anonymous visitors.
+      location.replace("./index.html");
+    } else {
+      const email = session.email;
+      const local = email.split("@")[0] || "there";
+      const firstName = local.split(/[._+-]/)[0] || local;
+
+      document.getElementById("who-email").textContent = email;
+      document.getElementById("avatar").textContent = email.charAt(0);
+      document.getElementById("first-name").textContent = firstName;
+
+      document.getElementById("sign-out").addEventListener("click", () => {
+        signOut();
+        location.replace("./index.html");
+      });
+
+      // Back button after signing out shouldn't show the landing page again.
+      window.addEventListener("pageshow", (event) => {
+        if (event.persisted && !getSession()) location.replace("./index.html");
+      });
+    }
+  </script>
+</body>
+</html>
