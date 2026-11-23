@@ -58,6 +58,7 @@ body {
   font-weight: 650;
   letter-spacing: -0.01em;
   font-size: 16px;
+  white-space: nowrap;
 }
 
 .brand-mark {
@@ -176,6 +177,13 @@ button.primary[disabled] { opacity: 0.6; cursor: default; }
   gap: 10px;
   font-size: 13px;
   color: var(--muted);
+  min-width: 0;
+}
+
+#who-email {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .avatar {
@@ -200,6 +208,7 @@ button.ghost {
   font: inherit;
   font-size: 13px;
   cursor: pointer;
+  white-space: nowrap;
   transition: color 0.15s, border-color 0.15s;
 }
 
@@ -261,4 +270,24 @@ p.lede {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.02em;
+}
+
+/* ---------- narrow screens ---------- */
+
+@media (max-width: 560px) {
+  .topbar {
+    padding: 12px 14px;
+    gap: 10px;
+  }
+
+  .topbar .brand { font-size: 14.5px; }
+
+  /* The email does not fit beside the avatar and the sign-out button. */
+  #who-email { display: none; }
+
+  main.wrap {
+    padding: 34px 16px 60px;
+  }
+
+  .auth-card { padding: 24px 20px 20px; }
 }

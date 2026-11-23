@@ -58,7 +58,7 @@
     } else {
       const email = session.email;
       const local = email.split("@")[0] || "there";
-      const firstName = local.split(/[._+-]/)[0] || local;
+      const firstName = (local.split(/[._+-]/)[0] || local).replace(/^./, (c) => c.toUpperCase());
 
       document.getElementById("who-email").textContent = email;
       document.getElementById("avatar").textContent = email.charAt(0);
