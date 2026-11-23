@@ -73,6 +73,9 @@
       window.addEventListener("pageshow", (event) => {
         if (event.persisted && !getSession()) location.replace("./index.html");
       });
+
+      // Signals that the landing page has finished wiring itself up.
+      document.documentElement.dataset.ready = "1";
     }
   </script>
 </body>

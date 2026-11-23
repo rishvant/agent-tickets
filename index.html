@@ -77,6 +77,9 @@
     emailInput.addEventListener("input", clearError);
     passwordInput.addEventListener("input", clearError);
 
+    // Signals that the form is wired up and interactive.
+    document.documentElement.dataset.ready = "1";
+
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       clearError();
