@@ -14,6 +14,7 @@ const TRANSITIONS = {
   block: (db, { ticketId, actor, body }) => tickets.blockTicket(db, { ticketId, actor, reason: body.reason }),
   cancel: (db, { ticketId, actor }) => tickets.cancelTicket(db, { ticketId, actor }),
   reopen: (db, { ticketId, actor }) => tickets.reopenTicket(db, { ticketId, actor }),
+  heartbeat: (db, { ticketId, actor }) => tickets.renewLease(db, { ticketId, actor }),
 };
 
 export function register(router) {

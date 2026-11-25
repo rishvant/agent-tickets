@@ -421,6 +421,60 @@ export function patchTicket(db, { ticketId, actor, patch = {}, version } = {}) {
 
 /* -------------------------------------------------------------- transitions */
 
+/**
+ * Heartbeat: the current holder extends its own lease.
+ *
+ * Why this exists: a fixed 15-minute lease means any task that legitimately takes
+ * longer is force-released, and its holder can then never finish it (it gets a 409).
+ * Renewal lets a working agent keep a ticket for as long as it is actually working on
+ * it, while still guaranteeing that a dead holder releases its ticket.
+ *
+ * Ordering matters for the stale-holder case: the caller sweeps expired leases before
+ * this runs, so a holder whose lease already lapsed finds the ticket back in `open`
+ * and gets 409 INVALID_TRANSITION - the same treatment every other stale-holder action
+ * gets. A live ticket held by somebody else is a plain 403 NOT_ASSIGNEE, matching
+ * /start, /complete and /block.
+ */
+export function renewLease(db, { ticketId, actor } = {}) {
+  const ticket = requireTicket(db, ticketId);
+  assertNotTerminal(ticket);
+
+  if (!HELD_STATES.includes(ticket.state)) {
+    throw new ApiError(
+      409,
+      ERROR_CODES.INVALID_TRANSITION,
+      `cannot renew the lease of a ticket in state "${ticket.state}"`,
+    );
+  }
+  assertAssignee(ticket, actor);
+
+  const timestamp = nowIso();
+  const lease = leaseExpiryIso();
+
+  const result = db
+    .prepare(
+      `UPDATE tickets
+          SET lease_expires_at = ?, version = version + 1, updated_at = ?
+        WHERE id = ? AND assignee_id = ? AND state = ?`,
+    )
+    .run(lease, timestamp, ticket.id, actor.id, ticket.state);
+
+  if (result.changes !== 1) {
+    throw new ApiError(409, ERROR_CODES.INVALID_TRANSITION, 'ticket changed while renewing the lease; retry');
+  }
+
+  recordActivity(db, {
+    ticketId: ticket.id,
+    actorId: actor.id,
+    action: 'lease_renewed',
+    fromState: ticket.state,
+    toState: ticket.state,
+    metadata: { previous_lease_expires_at: ticket.lease_expires_at, lease_expires_at: lease },
+  });
+
+  return requireTicket(db, ticket.id);
+}
+
 export function claimTicket(db, { ticketId, actor } = {}) {
   const ticket = requireTicket(db, ticketId);
   assertNotTerminal(ticket);

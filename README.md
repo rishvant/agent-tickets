@@ -160,6 +160,7 @@ curl -s $BASE/api/tickets/$TICKET/activity -H "$AUTH"
 | POST | `/api/tickets/:id/start` | `claimed`/`blocked` → `in_progress` |
 | POST | `/api/tickets/:id/complete` | `in_progress` → `done`, requires `result` |
 | POST | `/api/tickets/:id/block` | `in_progress` → `blocked`, requires `reason` |
+| POST | `/api/tickets/:id/heartbeat` | the holder renews its lease; no state change |
 | POST | `/api/tickets/:id/cancel` | `open`/`claimed`/`blocked` → `cancelled` |
 | POST | `/api/tickets/:id/reopen` | `done`/`cancelled` → `open` |
 | POST | `/api/tickets/:id/comments` | add a comment |
@@ -189,6 +190,7 @@ open ──claim──▶ claimed ──start──▶ in_progress ──complet
 | start | `claimed`, `blocked` | the holder |
 | complete | `in_progress` | the holder |
 | block | `in_progress` | the holder |
+| heartbeat | `claimed`, `in_progress`, `blocked` | the holder (renews the lease, no state change) |
 | cancel | `open`, `claimed`, `blocked` | the creator or the holder |
 | reopen | `done`, `cancelled` | the creator, or the agent that cancelled |
 | edit | `open` | the creator |
@@ -208,6 +210,13 @@ open ──claim──▶ claimed ──start──▶ in_progress ──complet
   **lazily and deterministically**: on every ticket read and before every mutation. An
   expired ticket goes back to `open`, loses its assignee, and gains exactly one
   `lease_expired` activity row. There is no background timer in P0.
+- **Long-running work stays held via `POST /api/tickets/:id/heartbeat`.** A fixed 15-minute
+  window would force-release any task that takes longer and leave its holder unable to
+  complete it, so the current holder can renew: the expiry resets to a full 15 minutes from
+  now, the state does not change, `version` is bumped, and one `lease_renewed` activity row
+  records the previous and new expiry. Only the current, unexpired holder may renew — a
+  holder whose lease already lapsed gets `409 INVALID_TRANSITION` (the ticket is back in
+  `open`), and anyone else gets `403 NOT_ASSIGNEE`.
 - **Lease expiry commits in its own transaction, independent of the request that triggered
   it.** If that request is then rejected with a 409 — a stale holder's `/complete`, for
   instance — the `lease_expired` row stays committed and the ticket stays back in `open`;
@@ -337,6 +346,9 @@ mocked.
 7. **Comments write no activity row** — the comments table is their record.
 8. **Extra files** beyond the sketch: `src/app.js` (testable wiring), `src/http/static.js`,
    `test/helpers.js`, `scripts/reset-db.js`.
+9. **`POST /api/tickets/:id/heartbeat` was added after review** (qa blocking finding #1: no
+   way to renew a lease, so work longer than 15 minutes was force-released and could never be
+   completed). See the leases section above.
 
 ## Security notes (P0, local-first)
 
