@@ -8,6 +8,8 @@
   --accent: #5b7cfa;
   --accent-hover: #6f8cff;
   --danger: #ff6b6b;
+  --ok: #3ddc97;
+  --warn: #f5b544;
   --radius: 12px;
 }
 
@@ -95,7 +97,9 @@ body {
   margin-bottom: 6px;
 }
 
-.field input {
+.field input,
+.field select,
+.field textarea {
   width: 100%;
   padding: 10px 12px;
   background: var(--bg-soft);
@@ -107,7 +111,11 @@ body {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.field input:focus {
+.field textarea { resize: vertical; min-height: 64px; }
+
+.field input:focus,
+.field select:focus,
+.field textarea:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(91, 124, 250, 0.18);
@@ -154,7 +162,7 @@ button.primary[disabled] { opacity: 0.6; cursor: default; }
   line-height: 1.45;
 }
 
-/* ---------- app (landing) ---------- */
+/* ---------- app (board) ---------- */
 
 .topbar {
   position: sticky;
@@ -270,6 +278,159 @@ p.lede {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.02em;
+}
+
+/* ---------- board specifics ---------- */
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 34px 0 12px;
+}
+
+.section-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.section-head .count {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.banner {
+  display: none;
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 107, 107, 0.4);
+  background: rgba(255, 107, 107, 0.08);
+  color: #ffb3b3;
+  border-radius: 9px;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.banner.show { display: block; }
+
+.create-form {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+.create-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.create-row .grow { flex: 1; min-width: 220px; }
+.create-row select { max-width: 150px; }
+
+.ticket-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ticket {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+
+.ticket-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ticket-key {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ticket-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  flex: 1;
+  min-width: 160px;
+  overflow-wrap: anywhere;
+}
+
+.chip {
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.chip.open { background: rgba(91, 124, 250, 0.14); color: #a9bcff; }
+.chip.claimed { background: rgba(245, 181, 68, 0.14); color: var(--warn); }
+.chip.in_progress { background: rgba(61, 220, 151, 0.12); color: var(--ok); }
+.chip.blocked { background: rgba(255, 107, 107, 0.14); color: #ff9d9d; }
+.chip.done { background: rgba(139, 147, 167, 0.16); color: #c3c9d8; }
+.chip.cancelled { background: rgba(139, 147, 167, 0.1); color: #8b93a7; }
+
+.ticket-meta {
+  margin-top: 8px;
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.ticket-meta strong { color: #c9cfdd; font-weight: 550; }
+
+.ticket-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ticket-actions button {
+  padding: 6px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.ticket-actions button:hover { border-color: #3a4356; background: rgba(255, 255, 255, 0.03); }
+.ticket-actions button[disabled] { opacity: 0.5; cursor: default; }
+
+.empty {
+  padding: 22px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 13.5px;
+  text-align: center;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
 }
 
 /* ---------- narrow screens ---------- */

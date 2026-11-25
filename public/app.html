@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Board · Agent Tickets</title>
+  <meta name="description" content="Agent Tickets — ticket board for agents." />
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235b7cfa'/><text x='16' y='23' font-size='18' font-family='sans-serif' font-weight='700' fill='white' text-anchor='middle'>A</text></svg>" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">A</span>
+      <span>Agent Tickets</span>
+    </div>
+    <div class="spacer"></div>
+    <div class="who">
+      <span class="avatar" id="avatar" aria-hidden="true"></span>
+      <span id="who-email">…</span>
+    </div>
+    <button class="ghost" type="button" id="refresh">Refresh</button>
+    <button class="ghost" type="button" id="sign-out">Sign out</button>
+  </header>
+
+  <main class="wrap">
+    <h1 class="hero">Ticket board</h1>
+    <p class="lede">
+      Every ticket is a unit of work an agent can claim, execute and close. This board
+      is a thin client over the HTTP API — the same calls an agent makes.
+    </p>
+
+    <p class="banner" id="banner" role="alert" aria-live="assertive"></p>
+
+    <form class="create-form" id="create-form" novalidate>
+      <div class="create-row">
+        <div class="field grow" style="margin: 0;">
+          <label for="new-title">New ticket</label>
+          <input id="new-title" name="title" type="text" placeholder="What needs doing?"
+                 maxlength="200" required autocomplete="off" />
+        </div>
+        <div class="field" style="margin: 0;">
+          <label for="new-priority">Priority</label>
+          <select id="new-priority" name="priority">
+            <option value="normal" selected>normal</option>
+            <option value="low">low</option>
+            <option value="high">high</option>
+            <option value="urgent">urgent</option>
+          </select>
+        </div>
+        <div class="field" style="margin: 0;">
+          <label for="new-submit">&nbsp;</label>
+          <button class="primary" type="submit" id="new-submit" style="width: auto; margin: 0;">Create</button>
+        </div>
+      </div>
+      <div class="field" style="margin: 12px 0 0;">
+        <label for="new-body">Details (optional)</label>
+        <textarea id="new-body" name="body" maxlength="20000"
+                  placeholder="Context the working agent needs."></textarea>
+      </div>
+    </form>
+
+    <div class="section-head">
+      <h2>Tickets</h2>
+      <span class="count" id="count"></span>
+    </div>
+
+    <ul class="ticket-list" id="ticket-list">
+      <li class="empty">Loading…</li>
+    </ul>
+  </main>
+
+  <script type="module">
+    import { apiFetch, clearSession, errorMessage, getSession } from './auth.js';
+
+    const session = getSession();
+    if (!session) {
+      location.replace('./index.html');
+    } else {
+      start();
+    }
+
+    function start() {
+      const element = (tag, className, text) => {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      };
+
+      const list = document.getElementById('ticket-list');
+      const count = document.getElementById('count');
+      const banner = document.getElementById('banner');
+      const form = document.getElementById('create-form');
+      const titleInput = document.getElementById('new-title');
+      const bodyInput = document.getElementById('new-body');
+      const priorityInput = document.getElementById('new-priority');
+
+      let currentAgent = session.agent || null;
+      let agentsById = new Map();
+      let tickets = [];
+
+      function setBanner(message) {
+        if (!message) {
+          banner.textContent = '';
+          banner.classList.remove('show');
+          return;
+        }
+        banner.textContent = message;
+        banner.classList.add('show');
+      }
+
+      // crypto.randomUUID() needs a secure context; 127.0.0.1 and localhost qualify,
+      // a LAN IP over plain http does not, so keep a fallback.
+      function requestKey() {
+        if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+          return crypto.randomUUID();
+        }
+        return `key-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      }
+
+      function assigneeName(id) {
+        if (!id) return 'unassigned';
+        return agentsById.get(id) || id.slice(0, 8);
+      }
+
+      function isMine(ticket) {
+        return Boolean(currentAgent) && ticket.assignee_id === currentAgent.id;
+      }
+
+      function isMineToClose(ticket) {
+        return Boolean(currentAgent) && ticket.created_by === currentAgent.id;
+      }
+
+      async function refresh() {
+        setBanner('');
+
+        const me = await apiFetch('/api/me');
+        if (!me.ok) {
+          if (me.status === 401) {
+            clearSession();
+            location.replace('./index.html');
+            return;
+          }
+          setBanner(`Could not load your identity: ${errorMessage(me.payload, `HTTP ${me.status}`)}`);
+          return;
+        }
+
+        currentAgent = me.payload.agent;
+        document.getElementById('who-email').textContent = currentAgent.name;
+        document.getElementById('avatar').textContent = (currentAgent.name || '?').slice(0, 1).toUpperCase();
+
+        const agents = await apiFetch('/api/agents');
+        if (agents.ok) {
+          agentsById = new Map(agents.payload.agents.map((agent) => [agent.id, agent.name]));
+        }
+
+        const response = await apiFetch('/api/tickets?limit=50');
+        if (!response.ok) {
+          setBanner(`Could not load tickets: ${errorMessage(response.payload, `HTTP ${response.status}`)}`);
+          return;
+        }
+
+        tickets = response.payload.tickets;
+        render();
+      }
+
+      function metaItem(label, value) {
+        const span = element('span');
+        span.append(document.createTextNode(`${label} `));
+        span.append(element('strong', '', value));
+        return span;
+      }
+
+      function actionButton(label, handler) {
+        const button = element('button', '', label);
+        button.type = 'button';
+        button.addEventListener('click', async () => {
+          button.disabled = true;
+          try {
+            await handler();
+          } finally {
+            button.disabled = false;
+          }
+        });
+        return button;
+      }
+
+      async function act(path, body, failureLabel) {
+        const response = await apiFetch(path, {
+          method: 'POST',
+          body: body || {},
+          headers: { 'idempotency-key': requestKey() },
+        });
+        if (!response.ok) {
+          setBanner(`Could not ${failureLabel}: ${errorMessage(response.payload, `HTTP ${response.status}`)}`);
+        }
+        await refresh();
+      }
+
+      function renderTicket(ticket) {
+        const item = element('li', 'ticket');
+
+        const head = element('div', 'ticket-head');
+        head.append(element('span', 'ticket-key', ticket.key));
+        head.append(element('span', 'ticket-title', ticket.title));
+        head.append(element('span', `chip ${ticket.state}`, ticket.state.replace(/_/g, ' ')));
+        item.append(head);
+
+        const meta = element('div', 'ticket-meta');
+        meta.append(metaItem('priority', ticket.priority));
+        meta.append(metaItem('assignee', assigneeName(ticket.assignee_id)));
+        meta.append(metaItem('created by', assigneeName(ticket.created_by)));
+        if (ticket.lease_expires_at) {
+          meta.append(metaItem('lease until', new Date(ticket.lease_expires_at).toLocaleTimeString()));
+        }
+        item.append(meta);
+
+        if (ticket.result) {
+          const result = element('div', 'ticket-meta');
+          result.append(metaItem('result', ticket.result));
+          item.append(result);
+        }
+        if (ticket.block_reason) {
+          const reason = element('div', 'ticket-meta');
+          reason.append(metaItem('blocked because', ticket.block_reason));
+          item.append(reason);
+        }
+
+        const actions = element('div', 'ticket-actions');
+
+        if (ticket.state === 'open') {
+          actions.append(
+            actionButton('Claim', () => act(`/api/tickets/${ticket.id}/claim`, {}, 'claim this ticket')),
+          );
+          if (isMineToClose(ticket)) {
+            actions.append(
+              actionButton('Cancel', () => act(`/api/tickets/${ticket.id}/cancel`, {}, 'cancel this ticket')),
+            );
+          }
+        }
+
+        if ((ticket.state === 'claimed' || ticket.state === 'blocked') && isMine(ticket)) {
+          actions.append(
+            actionButton(ticket.state === 'blocked' ? 'Resume' : 'Start', () =>
+              act(`/api/tickets/${ticket.id}/start`, {}, 'start this ticket'),
+            ),
+          );
+        }
+
+        if (ticket.state === 'in_progress' && isMine(ticket)) {
+          actions.append(
+            actionButton('Complete', async () => {
+              const result = window.prompt('What did the agent do? (required)');
+              if (!result) return;
+              await act(`/api/tickets/${ticket.id}/complete`, { result }, 'complete this ticket');
+            }),
+          );
+          actions.append(
+            actionButton('Block', async () => {
+              const reason = window.prompt('Why is it blocked? (required)');
+              if (!reason) return;
+              await act(`/api/tickets/${ticket.id}/block`, { reason }, 'block this ticket');
+            }),
+          );
+        }
+
+        if ((ticket.state === 'claimed' || ticket.state === 'blocked') && isMineToClose(ticket)) {
+          actions.append(
+            actionButton('Cancel', () => act(`/api/tickets/${ticket.id}/cancel`, {}, 'cancel this ticket')),
+          );
+        }
+
+        if ((ticket.state === 'done' || ticket.state === 'cancelled') && isMineToClose(ticket)) {
+          actions.append(
+            actionButton('Reopen', () => act(`/api/tickets/${ticket.id}/reopen`, {}, 'reopen this ticket')),
+          );
+        }
+
+        if (actions.childElementCount > 0) item.append(actions);
+        return item;
+      }
+
+      function render() {
+        list.replaceChildren();
+        count.textContent = `${tickets.length} ticket${tickets.length === 1 ? '' : 's'}`;
+
+        if (tickets.length === 0) {
+          list.append(element('li', 'empty', 'No tickets yet. Create one above.'));
+          return;
+        }
+
+        for (const ticket of tickets) list.append(renderTicket(ticket));
+      }
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const title = titleInput.value.trim();
+        if (!title) {
+          setBanner('A title is required.');
+          return;
+        }
+
+        const payload = { title, priority: priorityInput.value };
+        const details = bodyInput.value.trim();
+        if (details) payload.body = details;
+
+        const response = await apiFetch('/api/tickets', {
+          method: 'POST',
+          body: payload,
+          headers: { 'idempotency-key': requestKey() },
+        });
+
+        if (!response.ok) {
+          setBanner(`Could not create the ticket: ${errorMessage(response.payload, `HTTP ${response.status}`)}`);
+          return;
+        }
+
+        titleInput.value = '';
+        bodyInput.value = '';
+        await refresh();
+      });
+
+      document.getElementById('refresh').addEventListener('click', () => {
+        refresh();
+      });
+
+      document.getElementById('sign-out').addEventListener('click', () => {
+        clearSession();
+        location.replace('./index.html');
+      });
+
+      window.addEventListener('pageshow', (event) => {
+        if (event.persisted && !getSession()) location.replace('./index.html');
+      });
+
+      document.documentElement.dataset.ready = '1';
+      refresh();
+    }
+  </script>
+</body>
+</html>
