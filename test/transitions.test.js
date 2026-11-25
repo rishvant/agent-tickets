@@ -34,8 +34,9 @@ function expected(state, action, role) {
   if (terminal) {
     if (action !== 'reopen') return { status: 409, code: 'TICKET_CLOSED' };
     if (role === 'creator') return { status: 200 };
-    // In the cancelled fixture the holder is the agent that cancelled, so it may reopen.
-    if (state === 'cancelled' && role === 'holder') return { status: 200 };
+    // Both terminal fixtures are closed by the holder (it completes the `done` one and
+    // cancels the `cancelled` one), and whoever closed a ticket may reopen it.
+    if (role === 'holder') return { status: 200 };
     return { status: 403, code: 'NOT_ASSIGNEE' };
   }
 
@@ -312,4 +313,83 @@ test('reopen puts a finished ticket back in play and it can be completed again',
     'started',
     'completed',
   ]);
+});
+
+test('any agent may reassign a held ticket; the old holder loses it', async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.close());
+
+  const creator = await registerAgent(srv.base);
+  const holder = await registerAgent(srv.base);
+  const triager = await registerAgent(srv.base); // neither creator nor holder
+  const next = await registerAgent(srv.base);
+
+  const ticket = await createTicket(srv.base, creator.token, { title: 'triage me' });
+  assert.equal((await api(srv.base, 'POST', `/api/tickets/${ticket.id}/claim`, { token: holder.token, body: {} })).status, 200);
+
+  // Intentional triage semantics: assignment has no ownership check, so any authenticated
+  // agent can move a held ticket to another active agent.
+  const reassigned = await api(srv.base, 'POST', `/api/tickets/${ticket.id}/assign`, {
+    token: triager.token,
+    body: { assignee_id: next.agent.id },
+  });
+  assert.equal(reassigned.status, 200);
+  assert.equal(reassigned.body.ticket.assignee_id, next.agent.id);
+  assert.equal(reassigned.body.ticket.state, 'claimed');
+
+  // The old holder is no longer the holder, so it is rejected as NOT_ASSIGNEE.
+  const stale = await api(srv.base, 'POST', `/api/tickets/${ticket.id}/start`, { token: holder.token, body: {} });
+  assert.equal(stale.status, 403);
+  assert.equal(errorCode(stale), 'NOT_ASSIGNEE');
+
+  // Same answer from /heartbeat, which is legal in this state. (/complete would be a 409
+  // INVALID_TRANSITION instead: state is checked before the actor, by design.)
+  const staleRenew = await api(srv.base, 'POST', `/api/tickets/${ticket.id}/heartbeat`, {
+    token: holder.token,
+    body: {},
+  });
+  assert.equal(staleRenew.status, 403);
+  assert.equal(errorCode(staleRenew), 'NOT_ASSIGNEE');
+
+  // The new holder can work on it.
+  assert.equal((await api(srv.base, 'POST', `/api/tickets/${ticket.id}/start`, { token: next.token, body: {} })).status, 200);
+});
+
+test('the agent that completed a ticket may reopen it; a third agent cannot', async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.close());
+
+  const creator = await registerAgent(srv.base);
+  const worker = await registerAgent(srv.base);
+  const third = await registerAgent(srv.base);
+
+  const ticket = await createTicket(srv.base, creator.token, { title: 'completed then reopened' });
+
+  await api(srv.base, 'POST', `/api/tickets/${ticket.id}/claim`, { token: worker.token, body: {} });
+  await api(srv.base, 'POST', `/api/tickets/${ticket.id}/start`, { token: worker.token, body: {} });
+  const done = await api(srv.base, 'POST', `/api/tickets/${ticket.id}/complete`, {
+    token: worker.token,
+    body: { result: 'first attempt' },
+  });
+  assert.equal(done.status, 200);
+
+  const bystander = await api(srv.base, 'POST', `/api/tickets/${ticket.id}/reopen`, { token: third.token, body: {} });
+  assert.equal(bystander.status, 403);
+  assert.equal(errorCode(bystander), 'NOT_ASSIGNEE');
+
+  const reopened = await api(srv.base, 'POST', `/api/tickets/${ticket.id}/reopen`, { token: worker.token, body: {} });
+  assert.equal(reopened.status, 200, 'the agent that completed the ticket may reopen it');
+  assert.equal(reopened.body.ticket.state, 'open');
+  assert.equal(reopened.body.ticket.assignee_id, null);
+  assert.equal(reopened.body.ticket.closed_at, null);
+
+  // And it can be picked up and finished again.
+  assert.equal((await api(srv.base, 'POST', `/api/tickets/${ticket.id}/claim`, { token: worker.token, body: {} })).status, 200);
+  assert.equal((await api(srv.base, 'POST', `/api/tickets/${ticket.id}/start`, { token: worker.token, body: {} })).status, 200);
+  const again = await api(srv.base, 'POST', `/api/tickets/${ticket.id}/complete`, {
+    token: worker.token,
+    body: { result: 'second attempt' },
+  });
+  assert.equal(again.status, 200);
+  assert.equal(again.body.ticket.result, 'second attempt');
 });

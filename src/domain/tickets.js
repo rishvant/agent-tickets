@@ -782,16 +782,31 @@ function findCancellingAgent(db, ticketId) {
   return row?.actor_id ?? null;
 }
 
+function findCompletingAgent(db, ticketId) {
+  const row = db
+    .prepare("SELECT actor_id FROM activity WHERE ticket_id = ? AND action = 'completed' ORDER BY rowid DESC LIMIT 1")
+    .get(ticketId);
+  return row?.actor_id ?? null;
+}
+
 export function reopenTicket(db, { ticketId, actor } = {}) {
   const ticket = requireTicket(db, ticketId);
   if (!isTerminal(ticket)) {
     throw new ApiError(409, ERROR_CODES.INVALID_TRANSITION, `ticket is ${ticket.state}; only a finished ticket can be reopened`);
   }
 
-  const cancellingAgent = ticket.state === 'cancelled' ? findCancellingAgent(db, ticket.id) : null;
-  const allowed = actor.id === ticket.created_by || (cancellingAgent !== null && actor.id === cancellingAgent);
+  // Whoever closed the ticket may undo that closure: the creator always, plus the agent
+  // that completed a `done` ticket or cancelled a `cancelled` one. Uninvolved agents are
+  // still rejected, so a ticket cannot be yanked around by a bystander.
+  const closingAgent =
+    ticket.state === 'cancelled' ? findCancellingAgent(db, ticket.id) : findCompletingAgent(db, ticket.id);
+  const allowed = actor.id === ticket.created_by || (closingAgent !== null && actor.id === closingAgent);
   if (!allowed) {
-    throw new ApiError(403, ERROR_CODES.NOT_ASSIGNEE, 'only the creator or the agent that cancelled this ticket may reopen it');
+    throw new ApiError(
+      403,
+      ERROR_CODES.NOT_ASSIGNEE,
+      'only the creator, or the agent that completed or cancelled this ticket, may reopen it',
+    );
   }
 
   const timestamp = nowIso();

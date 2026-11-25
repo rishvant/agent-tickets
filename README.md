@@ -187,13 +187,13 @@ open ──claim──▶ claimed ──start──▶ in_progress ──complet
 |---|---|---|
 | create | — | any registered agent |
 | claim | `open` | any agent, for itself |
-| assign | `open`, `claimed`, `blocked` | any agent, to any **other** active agent |
+| assign | `open`, `claimed`, `blocked` | any agent, to any **other** active agent — no ownership check, by design (triage) |
 | start | `claimed`, `blocked` | the holder |
 | complete | `in_progress` | the holder |
 | block | `in_progress` | the holder |
 | heartbeat | `claimed`, `in_progress`, `blocked` | the holder (renews the lease, no state change) |
 | cancel | `open`, `claimed`, `blocked` | the creator or the holder |
-| reopen | `done`, `cancelled` | the creator, or the agent that cancelled |
+| reopen | `done`, `cancelled` | the creator, the agent that completed it, or the agent that cancelled it |
 | edit | `open` | the creator |
 
 `done` and `cancelled` are terminal for everything except `/reopen`.
@@ -368,6 +368,13 @@ mocked.
     state-changing UPDATE now asserts `changes === 1` before writing an audit row, `version`
     must be an integer, `block_reason` is cleared on assign and on expiry, and a stale holder
     gets the new `LEASE_EXPIRED` code.
+11. **`/assign` has no ownership check, by design (triage semantics).** Any authenticated
+    agent may reassign any held ticket to any other active agent — confirmed as intended by
+    the product owner. The displaced holder immediately loses its rights on the ticket and
+    gets `403 NOT_ASSIGNEE` if it tries to act on it, and the new holder gets a fresh lease.
+    `/reopen` likewise allows the agent that completed a `done` ticket in addition to the
+    creator and the agent that cancelled a `cancelled` one: whoever closed a ticket may undo
+    that closure, while a bystander gets `403 NOT_ASSIGNEE`.
 
 ## Security notes (P0, local-first)
 

@@ -95,7 +95,7 @@ test('authorisation negatives: non-holders cannot mutate a ticket', async (t) =>
   assert.equal(patchByThird.status, 403);
   assert.equal(errorCode(patchByThird), 'FORBIDDEN');
 
-  // A non-creator, non-holder, non-canceller cannot reopen either.
+  // A third agent cannot reopen a ticket it did not close.
   assert.equal((await api(srv.base, 'POST', `/api/tickets/${ticket.id}/complete`, {
     token: holder.token,
     body: { result: 'done' },
