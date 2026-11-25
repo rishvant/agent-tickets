@@ -34,7 +34,6 @@ function sendOutcome(ctx, outcome) {
 }
 
 function list(ctx) {
-  tickets.sweepExpiredLeasesCommitted(ctx.db);
   const assigneeParam = ctx.query.get('assignee');
   const assigneeId = assigneeParam === 'me' ? ctx.agent.id : assigneeParam ?? undefined;
   const result = tickets.listTickets(ctx.db, {
@@ -73,7 +72,6 @@ function create(ctx) {
 }
 
 function detail(ctx) {
-  tickets.sweepExpiredLeasesCommitted(ctx.db);
   const payload = tickets.getTicketDetail(ctx.db, { ticketId: ctx.params.id });
   json(ctx.res, 200, payload);
   return 200;

@@ -18,6 +18,12 @@ import { getAgentPublic } from './agents.js';
 export const STATES = Object.freeze(['open', 'claimed', 'in_progress', 'blocked', 'done', 'cancelled']);
 export const TERMINAL_STATES = Object.freeze(['done', 'cancelled']);
 export const HELD_STATES = Object.freeze(['claimed', 'in_progress', 'blocked']);
+// Lease expiry only applies to states where the holder is actively working. A
+// `blocked` ticket is deliberately exempt: waiting on input is not a time-bounded
+// activity, and reaping it would take the ticket away from a holder that is still
+// legitimately responsible for it. Blocked tickets leave that state via /start,
+// /assign or /cancel, all of which remain available.
+export const EXPIRABLE_STATES = Object.freeze(['claimed', 'in_progress']);
 export const ASSIGNABLE_STATES = Object.freeze(['open', 'claimed', 'blocked']);
 export const PRIORITIES = Object.freeze(['low', 'normal', 'high', 'urgent']);
 
@@ -136,6 +142,72 @@ export function hasActiveTicket(db, agentId, excludeTicketId = null) {
   return Boolean(row);
 }
 
+/** True when the ticket is expirable and its lease is in the past. */
+function isLeaseExpired(ticket, at = nowIso()) {
+  return Boolean(
+    ticket &&
+      ticket.lease_expires_at &&
+      EXPIRABLE_STATES.includes(ticket.state) &&
+      ticket.lease_expires_at <= at,
+  );
+}
+
+/**
+ * Adds a computed `lease_expired` flag to a ticket row for API responses.
+ *
+ * Reads no longer sweep (that would take BEGIN IMMEDIATE on every GET), so a GET can
+ * legitimately return a ticket whose lease has lapsed but which no mutation has reaped
+ * yet. The flag makes that state visible instead of silently reporting a dead lease as
+ * if it were live. It is derived, never stored.
+ */
+export function decorateTicket(ticket, at = nowIso()) {
+  if (!ticket) return ticket;
+  return { ...ticket, lease_expired: isLeaseExpired(ticket, at) };
+}
+
+/**
+ * True when this actor lost the ticket because its own lease expired: the ticket is
+ * back in the queue and the most recent lease_expired row names this agent. Used to
+ * answer 409 LEASE_EXPIRED instead of a generic INVALID_TRANSITION.
+ */
+function leaseWasLostBy(db, ticket, actorId) {
+  if (!ticket || ticket.state !== 'open') return false;
+  const row = db
+    .prepare("SELECT metadata FROM activity WHERE ticket_id = ? AND action = 'lease_expired' ORDER BY rowid DESC LIMIT 1")
+    .get(ticket.id);
+  if (!row) return false;
+  try {
+    const metadata = JSON.parse(row.metadata);
+    return metadata.previous_assignee_id === actorId;
+  } catch {
+    return false;
+  }
+}
+
+/** 409 for a state that does not allow the action; LEASE_EXPIRED when the caller's own lease lapsed. */
+function stateError(db, ticket, actor, message) {
+  if (leaseWasLostBy(db, ticket, actor.id)) {
+    return new ApiError(
+      409,
+      ERROR_CODES.LEASE_EXPIRED,
+      'your lease on this ticket expired and the ticket is back in the queue',
+    );
+  }
+  return new ApiError(409, ERROR_CODES.INVALID_TRANSITION, message);
+}
+
+/**
+ * Every state-changing UPDATE is conditional on the state it was read in, so the
+ * driver must report exactly one row. Anything else means the ticket moved under us:
+ * reject with 409 *before* writing an activity row, so a rejected action can never
+ * leave a duplicate audit entry.
+ */
+function assertSingleRow(result, action) {
+  if (result.changes !== 1) {
+    throw new ApiError(409, ERROR_CODES.INVALID_TRANSITION, `ticket changed while trying to ${action}; retry`);
+  }
+}
+
 /* ------------------------------------------------------- lease expiry (lazy) */
 
 /**
@@ -145,14 +217,15 @@ export function hasActiveTicket(db, agentId, excludeTicketId = null) {
 function expireLease(db, ticketId, at = nowIso()) {
   const ticket = getTicketRow(db, ticketId);
   if (!ticket) return false;
-  if (!HELD_STATES.includes(ticket.state)) return false;
+  if (!EXPIRABLE_STATES.includes(ticket.state)) return false;
   if (!ticket.lease_expires_at) return false;
   if (ticket.lease_expires_at > at) return false;
 
   const result = db
     .prepare(
       `UPDATE tickets
-          SET state = 'open', assignee_id = NULL, lease_expires_at = NULL, version = version + 1, updated_at = ?
+          SET state = 'open', assignee_id = NULL, lease_expires_at = NULL, block_reason = NULL,
+              version = version + 1, updated_at = ?
         WHERE id = ? AND state = ? AND lease_expires_at <= ?`,
     )
     .run(at, ticket.id, ticket.state, at);
@@ -182,7 +255,7 @@ export function sweepExpiredLeases(db, { now = nowIso(), limit = 50 } = {}) {
   const rows = db
     .prepare(
       `SELECT id FROM tickets
-        WHERE state IN ('claimed', 'in_progress', 'blocked')
+        WHERE state IN ('claimed', 'in_progress')
           AND lease_expires_at IS NOT NULL
           AND lease_expires_at <= ?
         ORDER BY lease_expires_at ASC
@@ -246,7 +319,7 @@ export function createTicket(db, { actor, title, body, priority } = {}) {
     metadata: { key },
   });
 
-  return requireTicket(db, ticketId);
+  return decorateTicket(requireTicket(db, ticketId));
 }
 
 /* --------------------------------------------------------------------- read */
@@ -321,7 +394,7 @@ export function listTickets(db, { state, assigneeId, priority, limit, cursor } =
   const page = hasMore ? rows.slice(0, pageSize) : rows;
   const nextCursor = hasMore && page.length > 0 ? encodeCursor(page[page.length - 1]) : null;
 
-  return { tickets: page, limit: pageSize, next_cursor: nextCursor };
+  return { tickets: page.map((row) => decorateTicket(row)), limit: pageSize, next_cursor: nextCursor };
 }
 
 export function listActivity(db, { ticketId, limit = ACTIVITY_PAGE_SIZE } = {}) {
@@ -339,7 +412,7 @@ export function listComments(db, { ticketId } = {}) {
 export function getTicketDetail(db, { ticketId, activityLimit = ACTIVITY_PAGE_SIZE } = {}) {
   const ticket = requireTicket(db, ticketId);
   return {
-    ticket,
+    ticket: decorateTicket(ticket),
     comments: listComments(db, { ticketId }),
     activity: listActivity(db, { ticketId, limit: activityLimit }),
   };
@@ -359,7 +432,11 @@ export function patchTicket(db, { ticketId, actor, patch = {}, version } = {}) {
   if (version === undefined || version === null || version === '') {
     throw new ApiError(400, ERROR_CODES.VALIDATION_ERROR, '"version" is required to edit a ticket');
   }
-  if (Number(version) !== Number(ticket.version)) {
+  const versionNumber = Number(version);
+  if (!Number.isInteger(versionNumber)) {
+    throw new ApiError(400, ERROR_CODES.VALIDATION_ERROR, '"version" must be an integer');
+  }
+  if (versionNumber !== Number(ticket.version)) {
     throw new ApiError(
       409,
       ERROR_CODES.VERSION_CONFLICT,
@@ -416,7 +493,7 @@ export function patchTicket(db, { ticketId, actor, patch = {}, version } = {}) {
     metadata: { fields: changed },
   });
 
-  return requireTicket(db, ticketId);
+  return decorateTicket(requireTicket(db, ticketId));
 }
 
 /* -------------------------------------------------------------- transitions */
@@ -440,11 +517,7 @@ export function renewLease(db, { ticketId, actor } = {}) {
   assertNotTerminal(ticket);
 
   if (!HELD_STATES.includes(ticket.state)) {
-    throw new ApiError(
-      409,
-      ERROR_CODES.INVALID_TRANSITION,
-      `cannot renew the lease of a ticket in state "${ticket.state}"`,
-    );
+    throw stateError(db, ticket, actor, `cannot renew the lease of a ticket in state "${ticket.state}"`);
   }
   assertAssignee(ticket, actor);
 
@@ -472,7 +545,7 @@ export function renewLease(db, { ticketId, actor } = {}) {
     metadata: { previous_lease_expires_at: ticket.lease_expires_at, lease_expires_at: lease },
   });
 
-  return requireTicket(db, ticket.id);
+  return decorateTicket(requireTicket(db, ticket.id));
 }
 
 export function claimTicket(db, { ticketId, actor } = {}) {
@@ -509,7 +582,7 @@ export function claimTicket(db, { ticketId, actor } = {}) {
     metadata: { lease_expires_at: lease },
   });
 
-  return requireTicket(db, ticket.id);
+  return decorateTicket(requireTicket(db, ticket.id));
 }
 
 export function assignTicket(db, { ticketId, actor, assigneeId } = {}) {
@@ -550,7 +623,8 @@ export function assignTicket(db, { ticketId, actor, assigneeId } = {}) {
   const result = db
     .prepare(
       `UPDATE tickets
-          SET state = 'claimed', assignee_id = ?, lease_expires_at = ?, version = version + 1, updated_at = ?
+          SET state = 'claimed', assignee_id = ?, lease_expires_at = ?, block_reason = NULL,
+              version = version + 1, updated_at = ?
         WHERE id = ? AND state = ?`,
     )
     .run(target.id, lease, timestamp, ticket.id, ticket.state);
@@ -570,24 +644,25 @@ export function assignTicket(db, { ticketId, actor, assigneeId } = {}) {
     metadata: { assignee_id: target.id, previous_assignee_id: ticket.assignee_id },
   });
 
-  return requireTicket(db, ticket.id);
+  return decorateTicket(requireTicket(db, ticket.id));
 }
 
 export function startTicket(db, { ticketId, actor } = {}) {
   const ticket = requireTicket(db, ticketId);
   assertNotTerminal(ticket);
   if (!['claimed', 'blocked'].includes(ticket.state)) {
-    throw new ApiError(409, ERROR_CODES.INVALID_TRANSITION, `cannot start a ticket in state "${ticket.state}"`);
+    throw stateError(db, ticket, actor, `cannot start a ticket in state "${ticket.state}"`);
   }
   assertAssignee(ticket, actor);
 
   const timestamp = nowIso();
   const lease = leaseExpiryIso();
-  db.prepare(
+  const result = db.prepare(
     `UPDATE tickets
         SET state = 'in_progress', block_reason = NULL, lease_expires_at = ?, version = version + 1, updated_at = ?
       WHERE id = ? AND state = ?`,
   ).run(lease, timestamp, ticket.id, ticket.state);
+  assertSingleRow(result, 'start the ticket');
 
   recordActivity(db, {
     ticketId: ticket.id,
@@ -598,25 +673,26 @@ export function startTicket(db, { ticketId, actor } = {}) {
     metadata: { lease_expires_at: lease },
   });
 
-  return requireTicket(db, ticket.id);
+  return decorateTicket(requireTicket(db, ticket.id));
 }
 
 export function completeTicket(db, { ticketId, actor, result: resultText } = {}) {
   const ticket = requireTicket(db, ticketId);
   assertNotTerminal(ticket);
   if (ticket.state !== 'in_progress') {
-    throw new ApiError(409, ERROR_CODES.INVALID_TRANSITION, `cannot complete a ticket in state "${ticket.state}"`);
+    throw stateError(db, ticket, actor, `cannot complete a ticket in state "${ticket.state}"`);
   }
   assertAssignee(ticket, actor);
 
   const result = cleanText(resultText, 'result', { max: LIMITS.result, required: true });
   const timestamp = nowIso();
 
-  db.prepare(
+  const updated = db.prepare(
     `UPDATE tickets
         SET state = 'done', result = ?, lease_expires_at = NULL, closed_at = ?, version = version + 1, updated_at = ?
       WHERE id = ? AND state = 'in_progress'`,
   ).run(result, timestamp, timestamp, ticket.id);
+  assertSingleRow(updated, 'complete the ticket');
 
   releaseAssignments(db, { ticketId: ticket.id });
   recordActivity(db, {
@@ -628,14 +704,14 @@ export function completeTicket(db, { ticketId, actor, result: resultText } = {})
     metadata: { result_length: result.length },
   });
 
-  return requireTicket(db, ticket.id);
+  return decorateTicket(requireTicket(db, ticket.id));
 }
 
 export function blockTicket(db, { ticketId, actor, reason: reasonText } = {}) {
   const ticket = requireTicket(db, ticketId);
   assertNotTerminal(ticket);
   if (ticket.state !== 'in_progress') {
-    throw new ApiError(409, ERROR_CODES.INVALID_TRANSITION, `cannot block a ticket in state "${ticket.state}"`);
+    throw stateError(db, ticket, actor, `cannot block a ticket in state "${ticket.state}"`);
   }
   assertAssignee(ticket, actor);
 
@@ -645,11 +721,12 @@ export function blockTicket(db, { ticketId, actor, reason: reasonText } = {}) {
   // well: otherwise a blocked ticket would be reaped while the agent waits.
   const lease = leaseExpiryIso();
 
-  db.prepare(
+  const result = db.prepare(
     `UPDATE tickets
         SET state = 'blocked', block_reason = ?, lease_expires_at = ?, version = version + 1, updated_at = ?
       WHERE id = ? AND state = 'in_progress'`,
   ).run(reason, lease, timestamp, ticket.id);
+  assertSingleRow(result, 'block the ticket');
 
   recordActivity(db, {
     ticketId: ticket.id,
@@ -660,7 +737,7 @@ export function blockTicket(db, { ticketId, actor, reason: reasonText } = {}) {
     metadata: { reason },
   });
 
-  return requireTicket(db, ticket.id);
+  return decorateTicket(requireTicket(db, ticket.id));
 }
 
 export function cancelTicket(db, { ticketId, actor } = {}) {
@@ -678,11 +755,12 @@ export function cancelTicket(db, { ticketId, actor } = {}) {
   }
 
   const timestamp = nowIso();
-  db.prepare(
+  const result = db.prepare(
     `UPDATE tickets
         SET state = 'cancelled', lease_expires_at = NULL, closed_at = ?, version = version + 1, updated_at = ?
       WHERE id = ? AND state = ?`,
   ).run(timestamp, timestamp, ticket.id, ticket.state);
+  assertSingleRow(result, 'cancel the ticket');
 
   releaseAssignments(db, { ticketId: ticket.id });
   recordActivity(db, {
@@ -694,7 +772,7 @@ export function cancelTicket(db, { ticketId, actor } = {}) {
     metadata: { previous_assignee_id: ticket.assignee_id },
   });
 
-  return requireTicket(db, ticket.id);
+  return decorateTicket(requireTicket(db, ticket.id));
 }
 
 function findCancellingAgent(db, ticketId) {
@@ -717,12 +795,13 @@ export function reopenTicket(db, { ticketId, actor } = {}) {
   }
 
   const timestamp = nowIso();
-  db.prepare(
+  const result = db.prepare(
     `UPDATE tickets
         SET state = 'open', assignee_id = NULL, lease_expires_at = NULL, block_reason = NULL, closed_at = NULL,
             version = version + 1, updated_at = ?
       WHERE id = ? AND state = ?`,
   ).run(timestamp, ticket.id, ticket.state);
+  assertSingleRow(result, 'reopen the ticket');
 
   recordActivity(db, {
     ticketId: ticket.id,
@@ -733,7 +812,7 @@ export function reopenTicket(db, { ticketId, actor } = {}) {
     metadata: {},
   });
 
-  return requireTicket(db, ticket.id);
+  return decorateTicket(requireTicket(db, ticket.id));
 }
 
 /* ----------------------------------------------------------------- comments */

@@ -120,13 +120,20 @@ test('a replay reports the old response even after the lease expired (documented
   assert.equal(claim.status, 200);
   assert.equal(claim.body.ticket.state, 'claimed');
 
-  // Time passes: the lease lapses, and the ticket is reaped back to open.
+  // Time passes: the lease lapses. Another agent takes the ticket over, which also
+  // runs the expiry sweep on that mutation path.
   const past = new Date(Date.now() - 60_000).toISOString();
   srv.db.prepare('UPDATE tickets SET lease_expires_at = ? WHERE id = ?').run(past, ticket.id);
-  const current = await api(srv.base, 'GET', `/api/tickets/${ticket.id}`, { token: agent.token });
-  assert.equal(current.body.ticket.state, 'open');
 
-  // Replaying the claim returns the stored 200 with the OLD payload, verbatim.
+  const second = await registerAgent(srv.base);
+  const reclaimed = await api(srv.base, 'POST', `/api/tickets/${ticket.id}/claim`, {
+    token: second.token,
+    body: {},
+  });
+  assert.equal(reclaimed.status, 200);
+  assert.equal(reclaimed.body.ticket.assignee_id, second.agent.id);
+
+  // Replaying the original claim returns the stored 200 with the OLD payload, verbatim.
   const replay = await api(srv.base, 'POST', `/api/tickets/${ticket.id}/claim`, {
     token: agent.token,
     body: {},
@@ -137,9 +144,10 @@ test('a replay reports the old response even after the lease expired (documented
   assert.equal(replay.body.ticket.state, 'claimed', 'replay is a historical record, not current state');
   assert.equal(replay.body.ticket.version, claim.body.ticket.version);
 
-  // The ticket itself was not re-claimed by the replay.
+  // The ticket itself was not re-claimed by the replay: it still belongs to the second agent.
   const after = await api(srv.base, 'GET', `/api/tickets/${ticket.id}`, { token: agent.token });
-  assert.equal(after.body.ticket.state, 'open');
+  assert.equal(after.body.ticket.state, 'claimed');
+  assert.equal(after.body.ticket.assignee_id, second.agent.id);
 });
 
 test('old idempotency records are pruned after 24h', async (t) => {

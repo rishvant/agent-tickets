@@ -102,6 +102,13 @@ test('PATCH requires the creator, an open ticket and the current version', async
   assert.equal(noVersion.status, 400);
   assert.equal(errorCode(noVersion), 'VALIDATION_ERROR');
 
+  const badVersion = await api(srv.base, 'PATCH', `/api/tickets/${ticket.id}`, {
+    token: creator.token,
+    body: { title: 'renamed', version: 'abc' },
+  });
+  assert.equal(badVersion.status, 400, 'a non-integer version is a validation error, not a conflict');
+  assert.equal(errorCode(badVersion), 'VALIDATION_ERROR');
+
   const ok = await api(srv.base, 'PATCH', `/api/tickets/${ticket.id}`, {
     token: creator.token,
     body: { title: 'renamed', version: ticket.version },

@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { openDatabase } from './db/driver.js';
 import { migrate } from './db/migrate.js';
 import { seedDemoAgents } from './db/seed.js';
-import { configureTickets, DEFAULT_LEASE_MS } from './domain/tickets.js';
+import { configureTickets, DEFAULT_LEASE_MS, sweepExpiredLeasesCommitted } from './domain/tickets.js';
 import { logRequest, authenticateRequest } from './http/middleware.js';
 import { ERROR_CODES, ApiError, errorBody, json, newRequestId, readJsonBody, sendError } from './http/responses.js';
 import { Router } from './http/router.js';
@@ -28,6 +28,30 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 export const PUBLIC_DIR = join(HERE, '..', 'public');
 export const DEFAULT_DB_PATH = process.env.DB_PATH ?? 'data/agent-tickets.db';
+export const DEFAULT_SWEEP_INTERVAL_MS = 60_000;
+
+/**
+ * Reads no longer sweep (every GET taking BEGIN IMMEDIATE would serialise reads and
+ * risk SQLITE_BUSY), so lease expiry is enforced by a bounded background sweeper plus
+ * the mutation paths. Set SWEEP_INTERVAL_MS=0 to disable it.
+ */
+function sweepIntervalFromEnv() {
+  const raw = process.env.SWEEP_INTERVAL_MS;
+  if (raw === undefined || raw === '') return DEFAULT_SWEEP_INTERVAL_MS;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return DEFAULT_SWEEP_INTERVAL_MS;
+  return Math.floor(value);
+}
+
+function sweepOnce(db, logger) {
+  try {
+    const released = sweepExpiredLeasesCommitted(db);
+    if (released > 0) logger.log?.(`[sweeper] released ${released} expired lease(s)`);
+  } catch (error) {
+    // A busy or closed database must not take the process down; the next tick retries.
+    logger.error?.(`[sweeper] sweep failed: ${error?.message ?? error}`);
+  }
+}
 
 function leaseMsFromEnv() {
   const minutes = process.env.LEASE_MINUTES;
@@ -51,6 +75,7 @@ export async function createApp({
   seed = process.env.SEED !== '0',
   logger = console,
   leaseMs,
+  sweepIntervalMs,
 } = {}) {
   if (dbPath !== ':memory:') mkdirSync(dirname(dbPath), { recursive: true });
 
@@ -61,6 +86,17 @@ export async function createApp({
 
   const router = buildRouter();
   const pipeline = { db, router, logger };
+
+  const sweepEveryMs = sweepIntervalMs === undefined
+    ? sweepIntervalFromEnv()
+    : Math.max(0, Number(sweepIntervalMs) || 0);
+
+  let sweeper = null;
+  if (sweepEveryMs > 0) {
+    sweeper = setInterval(() => sweepOnce(db, logger), sweepEveryMs);
+    // Never let the timer be the reason a process (or a test run) refuses to exit.
+    sweeper.unref?.();
+  }
 
   const server = createServer((req, res) => {
     handleRequest({ ...pipeline, req, res }).catch((error) => {
@@ -74,6 +110,10 @@ export async function createApp({
   });
 
   const close = async () => {
+    if (sweeper) {
+      clearInterval(sweeper);
+      sweeper = null;
+    }
     await new Promise((resolve) => {
       server.close(() => resolve());
     });
@@ -89,6 +129,7 @@ export async function createApp({
     migration,
     seeded,
     leaseMs: ticketConfig.leaseMs,
+    sweepIntervalMs: sweepEveryMs,
     close,
   };
 }

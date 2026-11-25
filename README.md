@@ -88,6 +88,7 @@ which one is in use.
 | `DB_DRIVER` | `auto` | `auto` \| `node:sqlite` \| `better-sqlite3` |
 | `SEED` | `1` | set to `0` to skip demo agents |
 | `LEASE_MINUTES` | `15` | lease length for claimed/in-progress tickets |
+| `SWEEP_INTERVAL_MS` | `60000` | background lease sweeper interval; `0` disables it |
 
 ---
 
@@ -206,10 +207,20 @@ open ──claim──▶ claimed ──start──▶ in_progress ──complet
 - **One active ticket per agent.** Holding a `claimed`, `in_progress` or `blocked` ticket
   makes `/claim` and `/assign`-to-you fail with `409 AGENT_BUSY`.
 - **Leases** are 15 minutes by default, set by `/claim` and `/assign`, renewed by `/start`,
-  `/block` and `/complete`, and cleared on completion/cancellation. Expiry is resolved
-  **lazily and deterministically**: on every ticket read and before every mutation. An
-  expired ticket goes back to `open`, loses its assignee, and gains exactly one
-  `lease_expired` activity row. There is no background timer in P0.
+  `/block`, `/complete` and `/heartbeat`, and cleared on completion/cancellation. Expiry is
+  enforced by the **mutation paths plus a bounded background sweeper** (`SWEEP_INTERVAL_MS`,
+  default 60 s, `0` disables) and never by reads: a GET that took `BEGIN IMMEDIATE` would
+  serialise reads and risk `SQLITE_BUSY`. An expired ticket goes back to `open`, loses its
+  assignee and its `block_reason`, and gains exactly one `lease_expired` activity row.
+- **Reads report expiry instead of fixing it.** Because a GET does not sweep, it can return a
+  ticket whose lease has already lapsed; the computed, never-stored `lease_expired` boolean on
+  the ticket says so. The next mutation touching that ticket (or the sweeper) reaps it.
+- **`blocked` tickets are exempt from expiry.** Waiting on input is not a time-bounded
+  activity, so a blocked ticket keeps its holder however long the wait lasts — it would
+  otherwise be taken from an agent that is still legitimately responsible for it. It leaves
+  that state via `/start`, `/assign` or `/cancel`.
+- **A stale holder gets `409 LEASE_EXPIRED`**, distinct from `INVALID_TRANSITION`, on
+  `/start`, `/complete`, `/block` and `/heartbeat` once its own lease has lapsed.
 - **Long-running work stays held via `POST /api/tickets/:id/heartbeat`.** A fixed 15-minute
   window would force-release any task that takes longer and leave its holder unable to
   complete it, so the current holder can renew: the expiry resets to a full 15 minutes from
@@ -242,6 +253,7 @@ Every error is `{"error":{"code":"…","message":"…","request_id":"…"}}`.
 | `NOT_FOUND` | 404 | unknown ticket, agent or endpoint |
 | `INVALID_TRANSITION` | 409 | live ticket, action does not apply to its state |
 | `TICKET_CLOSED` | 409 | any action except `/reopen` on a `done`/`cancelled` ticket |
+| `LEASE_EXPIRED` | 409 | the caller's own lease lapsed; the ticket is already back in the queue |
 | `TICKET_ALREADY_CLAIMED` | 409 | `/claim` on a ticket that is no longer `open` |
 | `NOT_ASSIGNEE` | 403 | a non-holder acting on a ticket, or a third party cancelling/reopening |
 | `AGENT_BUSY` | 409 | the agent (claim) or the assignee (assign) already holds an active ticket |
@@ -349,6 +361,13 @@ mocked.
 9. **`POST /api/tickets/:id/heartbeat` was added after review** (qa blocking finding #1: no
    way to renew a lease, so work longer than 15 minutes was force-released and could never be
    completed). See the leases section above.
+10. **Two lease-model changes from the same review**: `blocked` tickets are now exempt from
+    expiry (a wait on input is not time-bounded and must not cost the holder its ticket), and
+    reads no longer sweep — expiry moved to the mutation paths plus a bounded background
+    sweeper, with `lease_expired` reported on reads. Also from that review: every
+    state-changing UPDATE now asserts `changes === 1` before writing an audit row, `version`
+    must be an integer, `block_reason` is cleared on assign and on expiry, and a stale holder
+    gets the new `LEASE_EXPIRED` code.
 
 ## Security notes (P0, local-first)
 

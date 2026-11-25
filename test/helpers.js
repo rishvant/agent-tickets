@@ -19,7 +19,7 @@ export function uniqueName(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${counter}`;
 }
 
-export async function startServer({ leaseMs } = {}) {
+export async function startServer({ leaseMs, sweepIntervalMs = 0 } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'agent-tickets-test-'));
   const dbPath = join(directory, 'test.db');
 
@@ -29,6 +29,9 @@ export async function startServer({ leaseMs } = {}) {
     seed: false,
     logger: QUIET_LOGGER,
     leaseMs,
+    // Background sweeping is off by default so suites stay deterministic; the sweeper
+    // test opts back in with an explicit interval.
+    sweepIntervalMs,
   });
 
   await new Promise((resolve, reject) => {

@@ -10,7 +10,6 @@ export function register(router) {
 }
 
 function activity(ctx) {
-  tickets.sweepExpiredLeasesCommitted(ctx.db);
   if (!tickets.getTicketRow(ctx.db, ctx.params.id)) {
     throw new ApiError(404, ERROR_CODES.NOT_FOUND, 'ticket not found');
   }

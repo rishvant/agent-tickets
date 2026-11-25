@@ -225,3 +225,91 @@ test('locks: one active ticket per agent, no self-assignment, no in-progress rea
   assert.equal(unknown.status, 400);
   assert.equal(errorCode(unknown), 'VALIDATION_ERROR');
 });
+
+test('two concurrent completions: exactly one succeeds and writes one audit row', async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.close());
+
+  const worker = await registerAgent(srv.base);
+  const ticket = await createTicket(srv.base, worker.token, { title: 'one completion only' });
+
+  await api(srv.base, 'POST', `/api/tickets/${ticket.id}/claim`, { token: worker.token, body: {} });
+  await api(srv.base, 'POST', `/api/tickets/${ticket.id}/start`, { token: worker.token, body: {} });
+
+  const responses = await Promise.all([
+    api(srv.base, 'POST', `/api/tickets/${ticket.id}/complete`, {
+      token: worker.token,
+      body: { result: 'first caller' },
+    }),
+    api(srv.base, 'POST', `/api/tickets/${ticket.id}/complete`, {
+      token: worker.token,
+      body: { result: 'second caller' },
+    }),
+  ]);
+
+  const wins = responses.filter((response) => response.status === 200);
+  const losses = responses.filter((response) => response.status !== 200);
+
+  assert.equal(wins.length, 1, 'exactly one completion may win');
+  assert.equal(losses.length, 1);
+  assert.equal(losses[0].status, 409);
+  assert.equal(errorCode(losses[0]), 'TICKET_CLOSED');
+
+  const completedRows = srv.db
+    .prepare("SELECT id FROM activity WHERE ticket_id = ? AND action = 'completed'")
+    .all(ticket.id);
+  assert.equal(completedRows.length, 1, 'the rejected completion must not write an audit row');
+
+  const read = await api(srv.base, 'GET', `/api/tickets/${ticket.id}`, { token: worker.token });
+  assert.equal(read.body.ticket.state, 'done');
+  assert.equal(read.body.ticket.result, wins[0].body.ticket.result);
+});
+
+test('reopen puts a finished ticket back in play and it can be completed again', async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.close());
+
+  const creator = await registerAgent(srv.base);
+  const worker = await registerAgent(srv.base);
+  const ticket = await createTicket(srv.base, creator.token, { title: 'reopen me' });
+
+  await api(srv.base, 'POST', `/api/tickets/${ticket.id}/claim`, { token: worker.token, body: {} });
+  await api(srv.base, 'POST', `/api/tickets/${ticket.id}/start`, { token: worker.token, body: {} });
+  const first = await api(srv.base, 'POST', `/api/tickets/${ticket.id}/complete`, {
+    token: worker.token,
+    body: { result: 'first pass' },
+  });
+  assert.equal(first.status, 200);
+
+  const reopened = await api(srv.base, 'POST', `/api/tickets/${ticket.id}/reopen`, { token: creator.token, body: {} });
+  assert.equal(reopened.status, 200);
+  assert.equal(reopened.body.ticket.state, 'open');
+  assert.equal(reopened.body.ticket.assignee_id, null);
+  assert.equal(reopened.body.ticket.closed_at, null);
+  assert.equal(reopened.body.ticket.block_reason, null);
+
+  // A finished ticket does not hold the agent busy, so the same worker can take it again.
+  assert.equal((await api(srv.base, 'POST', `/api/tickets/${ticket.id}/claim`, { token: worker.token, body: {} })).status, 200);
+  assert.equal((await api(srv.base, 'POST', `/api/tickets/${ticket.id}/start`, { token: worker.token, body: {} })).status, 200);
+  const second = await api(srv.base, 'POST', `/api/tickets/${ticket.id}/complete`, {
+    token: worker.token,
+    body: { result: 'second pass' },
+  });
+  assert.equal(second.status, 200);
+  assert.equal(second.body.ticket.result, 'second pass');
+
+  const actions = srv.db
+    .prepare('SELECT action FROM activity WHERE ticket_id = ? ORDER BY rowid ASC')
+    .all(ticket.id)
+    .map((row) => row.action);
+  assert.deepEqual(actions, [
+    'created',
+    'claimed',
+    'started',
+    'completed',
+    'reopened',
+    'claimed',
+    'started',
+    'completed',
+  ]);
+});
