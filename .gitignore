@@ -1,0 +1,16 @@
+# runtime state
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# dependencies (the project has none by design, but keep the door closed)
+node_modules/
+
+# misc
+coverage/
+.env
+.DS_Store
+npm-debug.log

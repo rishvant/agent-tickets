@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign in · Agent Tickets</title>
+  <meta name="description" content="Sign in to Agent Tickets." />
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235b7cfa'/><text x='16' y='23' font-size='18' font-family='sans-serif' font-weight='700' fill='white' text-anchor='middle'>A</text></svg>" />
+</head>
+<body>
+  <div class="auth-shell">
+    <div class="auth-card">
+      <div class="brand">
+        <span class="brand-mark">A</span>
+        <span>Agent Tickets</span>
+      </div>
+
+      <h1>Sign in</h1>
+      <p class="sub">Paste the agent token printed by the server.</p>
+
+      <form id="login-form" novalidate>
+        <div class="field">
+          <label for="email">Label (for display only)</label>
+          <input id="email" name="email" type="email" autocomplete="username"
+                 placeholder="worker-a@local" />
+        </div>
+        <div class="field">
+          <label for="token">Agent token</label>
+          <input id="token" name="token" type="password" autocomplete="off" spellcheck="false"
+                 placeholder="at_…" required autofocus />
+        </div>
+
+        <button class="primary" type="submit" id="submit">Sign in</button>
+
+        <p class="error" id="error" role="alert" aria-live="polite"></p>
+      </form>
+
+      <p class="note">
+        The token is checked against <span class="mono">GET /api/me</span> before a session
+        is created. Fresh databases print the demo tokens once, to the console, on first boot
+        (<span class="mono">npm run dev</span>). If you lost them, <span class="mono">npm run db:reset</span>
+        rebuilds the database and prints new ones.
+      </p>
+    </div>
+  </div>
+
+  <script type="module">
+    import { checkToken, errorMessage, getSession, saveSession } from './auth.js';
+
+    if (getSession()) location.replace('./app.html');
+
+    const form = document.getElementById('login-form');
+    const emailInput = document.getElementById('email');
+    const tokenInput = document.getElementById('token');
+    const errorEl = document.getElementById('error');
+    const submitBtn = document.getElementById('submit');
+
+    function showError(message, field) {
+      errorEl.textContent = message;
+      errorEl.classList.add('show');
+      for (const element of [emailInput, tokenInput]) element.setAttribute('aria-invalid', 'false');
+      if (field) {
+        field.setAttribute('aria-invalid', 'true');
+        field.focus();
+      }
+    }
+
+    function clearError() {
+      errorEl.textContent = '';
+      errorEl.classList.remove('show');
+      for (const element of [emailInput, tokenInput]) element.setAttribute('aria-invalid', 'false');
+    }
+
+    emailInput.addEventListener('input', clearError);
+    tokenInput.addEventListener('input', clearError);
+
+    document.documentElement.dataset.ready = '1';
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      clearError();
+
+      const token = tokenInput.value.trim();
+      const email = emailInput.value.trim() || 'agent@local';
+
+      if (token.length < 16) {
+        showError('That does not look like an agent token (expected at_… ).', tokenInput);
+        return;
+      }
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Checking…';
+
+      try {
+        const result = await checkToken(token);
+        if (!result.ok) {
+          showError(
+            result.status === 401
+              ? 'The server rejected that token. Check the console output or reset the database.'
+              : errorMessage(result.payload, `Sign-in failed (HTTP ${result.status}).`),
+            tokenInput,
+          );
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Sign in';
+          return;
+        }
+
+        saveSession({ email, token, agent: result.payload.agent });
+        location.assign('./app.html');
+      } catch (error) {
+        showError('Could not reach the API. Is the server running?', tokenInput);
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Sign in';
+      }
+    });
+  </script>
+</body>
+</html>

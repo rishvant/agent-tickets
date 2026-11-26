@@ -1,0 +1,19 @@
+{
+  "name": "agent-tickets",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Agent Tickets - a ticket tracker for AI agents. P0: zero-dependency Node HTTP API, SQLite storage, static board.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node src/server.js",
+    "start": "node src/server.js",
+    "test": "node --test \"test/*.test.js\"",
+    "db:reset": "node scripts/reset-db.js",
+    "verify": "sh scripts/verify.sh"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
